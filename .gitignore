@@ -1,0 +1,4 @@
+/gatekit
+*.db
+*.db-wal
+*.db-shm
