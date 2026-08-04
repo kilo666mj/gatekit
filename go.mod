@@ -1,6 +1,6 @@
 module github.com/kilo666mj/gatekit
 
-go 1.26.3
+go 1.26.5
 
 require modernc.org/sqlite v1.56.0
 
