@@ -409,14 +409,20 @@ func (s *Store) List() (map[string]Entry, error) {
 	return out, nil
 }
 
-// SetStatus updates an existing fingerprint's status and label. It fails if
-// the fingerprint is not present; use UpsertStatus to pre-seed a verdict for a
-// fingerprint that has not been seen yet.
-func (s *Store) SetStatus(fp string, status Status, label string) error {
+// SetStatus updates an existing fingerprint's verdict, leaving its label
+// alone. It fails if the fingerprint is not present; use UpsertStatus to
+// pre-seed a verdict for a fingerprint that has not been seen yet.
+//
+// Status and label are deliberately separate operations. A CLI that folded
+// them together would blank the label every time an operator re-approved a
+// fingerprint without repeating it — losing exactly the annotation that makes
+// a stored fingerprint identifiable later. Callers that want to set both call
+// SetLabel as well.
+func (s *Store) SetStatus(fp string, status Status) error {
 	if !status.Valid() {
 		return fmt.Errorf("invalid status %q", status)
 	}
-	res, err := s.db.Exec(`UPDATE fingerprints SET status = ?, label = ? WHERE fp = ?`, status, label, fp)
+	res, err := s.db.Exec(`UPDATE fingerprints SET status = ? WHERE fp = ?`, status, fp)
 	if err != nil {
 		return err
 	}
