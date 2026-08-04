@@ -61,6 +61,12 @@ if entry.Status == store.StatusBlocked {
 and a verdict written ahead of time by `UpsertStatus` (how gatehub pre-approves
 a fingerprint on a fresh node) survives the client's first real connection.
 
+Verdict and label are separate operations — `SetStatus(fp, status)` and
+`SetLabel(fp, label)`. Folding them into one call means an operator who
+re-approves a fingerprint without repeating its label silently blanks it,
+losing the annotation that makes the row identifiable. `UpsertStatus` does take
+both, because the control plane is authoritative for both.
+
 ## Migrating an existing gate database
 
 sshgate and tlsgate both have databases in service, with protocol fields in

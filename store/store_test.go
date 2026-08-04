@@ -61,8 +61,11 @@ func TestObservePreservesVerdict(t *testing.T) {
 	if _, err := s.Observe(Observation{Fingerprint: "fp1", IP: "192.0.2.1"}, false); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
-	if err := s.SetStatus("fp1", StatusApproved, "laptop"); err != nil {
+	if err := s.SetStatus("fp1", StatusApproved); err != nil {
 		t.Fatalf("SetStatus: %v", err)
+	}
+	if err := s.SetLabel("fp1", "laptop"); err != nil {
+		t.Fatalf("SetLabel: %v", err)
 	}
 	first, err := s.Get("fp1")
 	if err != nil {
@@ -110,9 +113,35 @@ func TestUpsertStatusPlaceholderSurvivesFirstSighting(t *testing.T) {
 	}
 }
 
+// Changing a verdict must not disturb the label. An operator who re-approves
+// a fingerprint without repeating its label would otherwise lose the only
+// thing making that row identifiable later.
+func TestSetStatusPreservesLabel(t *testing.T) {
+	s := openTest(t)
+	if _, err := s.Observe(Observation{Fingerprint: "fp1"}, false); err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if err := s.SetLabel("fp1", "michael-laptop"); err != nil {
+		t.Fatalf("SetLabel: %v", err)
+	}
+	if err := s.SetStatus("fp1", StatusApproved); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	entry, err := s.Get("fp1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if entry.Label != "michael-laptop" {
+		t.Errorf("label = %q, want it preserved across a status change", entry.Label)
+	}
+	if entry.Status != StatusApproved {
+		t.Errorf("status = %q", entry.Status)
+	}
+}
+
 func TestSetStatusUnknownFingerprint(t *testing.T) {
 	s := openTest(t)
-	if err := s.SetStatus("nope", StatusApproved, ""); err == nil {
+	if err := s.SetStatus("nope", StatusApproved); err == nil {
 		t.Fatal("SetStatus on unknown fingerprint: want error")
 	}
 }
@@ -122,7 +151,7 @@ func TestSetStatusRejectsInvalid(t *testing.T) {
 	if _, err := s.Observe(Observation{Fingerprint: "fp1"}, false); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
-	if err := s.SetStatus("fp1", Status("wat"), ""); err == nil {
+	if err := s.SetStatus("fp1", Status("wat")); err == nil {
 		t.Fatal("want error for invalid status")
 	}
 }
@@ -162,7 +191,7 @@ func TestPruneToLimitKeepsApproved(t *testing.T) {
 			t.Fatalf("Observe: %v", err)
 		}
 	}
-	if err := s.SetStatus("a", StatusApproved, ""); err != nil {
+	if err := s.SetStatus("a", StatusApproved); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
 	deleted, err := s.PruneToLimit(2)
