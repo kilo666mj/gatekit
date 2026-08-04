@@ -4,10 +4,6 @@
     "config:recommended",
     ":dependencyDashboard"
   ],
-  "timezone": "Europe/Berlin",
-  "schedule": [
-    "before 5am on monday"
-  ],
   "labels": [
     "dependencies"
   ],
