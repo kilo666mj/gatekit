@@ -24,6 +24,9 @@ gatekit is what runs on the node and talks to it.
 | `controlplane` | gatehub sync client — pushes observations, pulls and applies policy |
 | `ratelimit` | Per-source-IP token bucket, IPv6-masked to /64, with a bounded bucket map |
 | `semaphore` | Global concurrency cap for in-flight connections |
+| `proxy` | `LISTEN=BACKEND` routes, bounded accept loops, connection tracking, and graceful drain |
+| `sdnotify` | systemd readiness notification with tableflip child-PID handoff support |
+| `lifecycle` | tableflip listener inheritance plus SIGHUP upgrade and terminating-signal coordination |
 
 ## Protocol metadata
 
@@ -100,12 +103,21 @@ production schemas.
 
 ## Status
 
-**v0.1** — store, control plane, rate limiter, semaphore.
+**v0.3** — store, control plane, rate limiter, semaphore, proxy lifecycle,
+systemd readiness notification, and tableflip lifecycle coordination are
+shared by sshgate and tlsgate.
 
-Not yet extracted: the proxy accept/peek/splice loop (and with it the
-`Fingerprinter` interface), the `list`/`approve`/`block`/`pending`/`label`/
-`delete`/`correlate` CLI verbs, and the shared Ansible role. Those land in
-v0.2, once the store API has been proven against both gates in production.
+The shared proxy package intentionally stops at route parsing, bounded accept,
+connection tracking, and drain. SSH must relay version strings and contact its
+backend before it can fingerprint KEXINIT, while TLS fingerprints from the
+client's first records; one `Fingerprinter` interface would conceal that real
+protocol difference rather than remove duplication.
+
+Not yet extracted: bidirectional stream helpers, CLI behavior, and shared
+deployment assets. The stream semantics and CLI commands currently differ in
+meaningful protocol-specific ways, so they should not move merely to reduce a
+line count. Deployment assets can follow after the shared runtime has been
+proven by both production gates.
 
 ## License
 

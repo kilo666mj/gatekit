@@ -2,7 +2,10 @@ module github.com/kilo666mj/gatekit
 
 go 1.26.5
 
-require modernc.org/sqlite v1.56.0
+require (
+	github.com/cloudflare/tableflip v1.2.3
+	modernc.org/sqlite v1.56.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
