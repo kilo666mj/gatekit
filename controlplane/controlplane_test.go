@@ -110,6 +110,9 @@ func TestPushObservations(t *testing.T) {
 	if obs.Count != 1 || len(obs.Ports) != 1 || obs.Ports[0] != 993 {
 		t.Errorf("count/ports = %d/%v", obs.Count, obs.Ports)
 	}
+	if len(obs.Sightings) != 1 || obs.Sightings[0].IP != "192.0.2.1" || obs.Sightings[0].Port != 993 {
+		t.Errorf("sightings = %+v", obs.Sightings)
+	}
 	// The metadata bag rides through untouched — this is what lets one syncer
 	// serve every gate without knowing the protocol.
 	if obs.Metadata["sni"] != "mail.example.com" {

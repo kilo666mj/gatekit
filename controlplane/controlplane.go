@@ -76,15 +76,16 @@ func (cfg Config) Interval() time.Duration {
 }
 
 type observation struct {
-	Fingerprint string         `json:"fingerprint"`
-	Status      store.Status   `json:"status"`
-	Label       string         `json:"label,omitempty"`
-	FirstSeen   string         `json:"first_seen,omitempty"`
-	LastSeen    string         `json:"last_seen,omitempty"`
-	IPs         []string       `json:"ips,omitempty"`
-	Ports       []int          `json:"ports,omitempty"`
-	Count       int            `json:"count,omitempty"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
+	Fingerprint string           `json:"fingerprint"`
+	Status      store.Status     `json:"status"`
+	Label       string           `json:"label,omitempty"`
+	FirstSeen   string           `json:"first_seen,omitempty"`
+	LastSeen    string           `json:"last_seen,omitempty"`
+	IPs         []string         `json:"ips,omitempty"`
+	Ports       []int            `json:"ports,omitempty"`
+	Sightings   []store.Sighting `json:"sightings,omitempty"`
+	Count       int              `json:"count,omitempty"`
+	Metadata    map[string]any   `json:"metadata,omitempty"`
 }
 
 type observationBatch struct {
@@ -266,6 +267,7 @@ func toObservation(fp string, entry store.Entry) observation {
 		LastSeen:    entry.LastSeen.UTC().Format(time.RFC3339Nano),
 		IPs:         limited(entry.IPs, maxObservationValues),
 		Ports:       limited(entry.Ports, maxObservationValues),
+		Sightings:   limited(entry.Sightings, maxObservationValues),
 		Count:       entry.Count,
 		Metadata:    entry.Meta,
 	}

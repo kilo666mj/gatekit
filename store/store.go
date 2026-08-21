@@ -52,7 +52,17 @@ type Entry struct {
 	Count       int            `json:"count"`
 	IPs         []string       `json:"ips,omitempty"`
 	Ports       []int          `json:"ports,omitempty"`
+	Sightings   []Sighting     `json:"sightings,omitempty"`
 	Meta        map[string]any `json:"meta,omitempty"`
+}
+
+// Sighting is the most recent observation of one fingerprint from one source
+// address and destination port. Unlike the compatibility IP/port sets, it
+// preserves enough timing and pairing information for safe correlation.
+type Sighting struct {
+	IP       string `json:"ip"`
+	Port     int    `json:"port,omitempty"`
+	LastSeen Time   `json:"last_seen"`
 }
 
 // Observation is one sighting of a fingerprint on the gate's hot path.
@@ -178,6 +188,13 @@ func (s *Store) init() error {
 			port INTEGER NOT NULL,
 			PRIMARY KEY (fp, port)
 		)`,
+		`CREATE TABLE IF NOT EXISTS fingerprint_sightings (
+			fp TEXT NOT NULL REFERENCES fingerprints(fp) ON DELETE CASCADE,
+			ip TEXT NOT NULL,
+			port INTEGER NOT NULL DEFAULT 0,
+			last_seen TEXT NOT NULL,
+			PRIMARY KEY (fp, ip, port)
+		)`,
 		`CREATE TABLE IF NOT EXISTS blocked_range_alerts (
 			range_name TEXT NOT NULL,
 			ip TEXT NOT NULL,
@@ -191,6 +208,7 @@ func (s *Store) init() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_fingerprints_last_seen ON fingerprints(last_seen)`,
 		`CREATE INDEX IF NOT EXISTS idx_fingerprint_ips_ip ON fingerprint_ips(ip)`,
+		`CREATE INDEX IF NOT EXISTS idx_fingerprint_sightings_ip_seen ON fingerprint_sightings(ip, last_seen)`,
 	} {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			return err
@@ -338,6 +356,14 @@ func (s *Store) Observe(obs Observation, blockUnknown bool) (Entry, error) {
 			return Entry{}, err
 		}
 	}
+	if obs.IP != "" {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO fingerprint_sightings (fp, ip, port, last_seen) VALUES (?, ?, ?, ?)
+			ON CONFLICT(fp, ip, port) DO UPDATE SET last_seen = excluded.last_seen`,
+			obs.Fingerprint, obs.IP, obs.Port, now); err != nil {
+			return Entry{}, err
+		}
+	}
 	ips, err := listStringsFrom(ctx, tx, `SELECT ip FROM fingerprint_ips WHERE fp = ? ORDER BY ip`, obs.Fingerprint)
 	if err != nil {
 		return Entry{}, err
@@ -346,11 +372,16 @@ func (s *Store) Observe(obs Observation, blockUnknown bool) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
+	sightings, err := listSightingsFrom(ctx, tx, `SELECT ip, port, last_seen FROM fingerprint_sightings WHERE fp = ? ORDER BY last_seen DESC, ip, port`, obs.Fingerprint)
+	if err != nil {
+		return Entry{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return Entry{}, err
 	}
 	entry.IPs = ips
 	entry.Ports = ports
+	entry.Sightings = sightings
 	return entry, nil
 }
 
@@ -366,6 +397,9 @@ func (s *Store) Get(fp string) (Entry, error) {
 		return Entry{}, err
 	}
 	if e.Ports, err = listIntsFrom(ctx, s.reader, `SELECT port FROM fingerprint_ports WHERE fp = ? ORDER BY port`, fp); err != nil {
+		return Entry{}, err
+	}
+	if e.Sightings, err = listSightingsFrom(ctx, s.reader, `SELECT ip, port, last_seen FROM fingerprint_sightings WHERE fp = ? ORDER BY last_seen DESC, ip, port`, fp); err != nil {
 		return Entry{}, err
 	}
 	return e, nil
@@ -401,9 +435,14 @@ func (s *Store) List() (map[string]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	sightings, err := allSightings(ctx, s.reader, `SELECT fp, ip, port, last_seen FROM fingerprint_sightings ORDER BY fp, last_seen DESC, ip, port`)
+	if err != nil {
+		return nil, err
+	}
 	for fp, e := range out {
 		e.IPs = ips[fp]
 		e.Ports = ports[fp]
+		e.Sightings = sightings[fp]
 		out[fp] = e
 	}
 	return out, nil
@@ -737,6 +776,52 @@ func allInts(ctx context.Context, q querier, query string) (map[string][]int, er
 	}
 	for _, v := range out {
 		sort.Ints(v)
+	}
+	return out, rows.Err()
+}
+
+func listSightingsFrom(ctx context.Context, q querier, query string, args ...any) ([]Sighting, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Sighting
+	for rows.Next() {
+		var sighting Sighting
+		var lastSeen string
+		if err := rows.Scan(&sighting.IP, &sighting.Port, &lastSeen); err != nil {
+			return nil, err
+		}
+		parsed, err := decodeTime(lastSeen)
+		if err != nil {
+			return nil, err
+		}
+		sighting.LastSeen = Time{Time: parsed}
+		out = append(out, sighting)
+	}
+	return out, rows.Err()
+}
+
+func allSightings(ctx context.Context, q querier, query string) (map[string][]Sighting, error) {
+	rows, err := q.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string][]Sighting)
+	for rows.Next() {
+		var fp, lastSeen string
+		var sighting Sighting
+		if err := rows.Scan(&fp, &sighting.IP, &sighting.Port, &lastSeen); err != nil {
+			return nil, err
+		}
+		parsed, err := decodeTime(lastSeen)
+		if err != nil {
+			return nil, err
+		}
+		sighting.LastSeen = Time{Time: parsed}
+		out[fp] = append(out[fp], sighting)
 	}
 	return out, rows.Err()
 }

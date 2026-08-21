@@ -41,6 +41,9 @@ func TestObserveFirstSighting(t *testing.T) {
 	if len(entry.Ports) != 1 || entry.Ports[0] != 443 {
 		t.Errorf("ports = %v", entry.Ports)
 	}
+	if len(entry.Sightings) != 1 || entry.Sightings[0].IP != "192.0.2.1" || entry.Sightings[0].Port != 443 || entry.Sightings[0].LastSeen.IsZero() {
+		t.Errorf("sightings = %+v", entry.Sightings)
+	}
 }
 
 func TestObserveBlockUnknown(t *testing.T) {
