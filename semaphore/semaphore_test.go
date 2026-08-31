@@ -14,7 +14,10 @@ func TestNilIsUnbounded(t *testing.T) {
 
 func TestAcquireBounds(t *testing.T) {
 	s := New(2)
-	if !s.Acquire() || !s.Acquire() {
+	if !s.Acquire() {
+		t.Fatal("denied first slot within capacity")
+	}
+	if !s.Acquire() {
 		t.Fatal("denied within capacity")
 	}
 	if s.Acquire() {
