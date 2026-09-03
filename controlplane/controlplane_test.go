@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -194,6 +195,50 @@ func TestPullPolicyAppliesDecisions(t *testing.T) {
 	}
 	if sawCursor != "cursor-2" {
 		t.Errorf("cursor not advanced: %q", sawCursor)
+	}
+}
+
+func TestPullPolicyAppliesTrustedRangesWhenPresent(t *testing.T) {
+	st := openStore(t)
+	ranges := []string{"192.0.2.4/32", "2001:db8:1234::/64"}
+	var applied []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(policyResponse{TrustedRanges: &ranges})
+	}))
+	defer srv.Close()
+
+	s, _ := New(st, Config{
+		URL: srv.URL, InstanceID: "web", Token: "t",
+		ApplyTrustedRanges: func(got []string) error {
+			applied = append([]string(nil), got...)
+			return nil
+		},
+	})
+	if err := s.PullPolicy(); err != nil {
+		t.Fatalf("PullPolicy: %v", err)
+	}
+	if !slices.Equal(applied, ranges) {
+		t.Fatalf("trusted ranges = %v, want %v", applied, ranges)
+	}
+}
+
+func TestPullPolicyOmittedTrustedRangesPreservesLocalState(t *testing.T) {
+	st := openStore(t)
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(policyResponse{})
+	}))
+	defer srv.Close()
+
+	s, _ := New(st, Config{
+		URL: srv.URL, InstanceID: "web", Token: "t",
+		ApplyTrustedRanges: func([]string) error { called = true; return nil },
+	})
+	if err := s.PullPolicy(); err != nil {
+		t.Fatalf("PullPolicy: %v", err)
+	}
+	if called {
+		t.Fatal("omitted trusted_ranges unexpectedly replaced local state")
 	}
 }
 

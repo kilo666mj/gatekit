@@ -39,6 +39,9 @@ type Config struct {
 	CA           string `json:"ca"`
 	ServerName   string `json:"server_name"`
 	SyncInterval string `json:"sync_interval"`
+	// ApplyTrustedRanges atomically replaces control-plane managed source
+	// bypasses. It is runtime wiring, not serialized configuration.
+	ApplyTrustedRanges func([]string) error `json:"-"`
 }
 
 // Enabled reports whether a control plane is configured at all.
@@ -94,8 +97,9 @@ type observationBatch struct {
 }
 
 type policyResponse struct {
-	Cursor    string     `json:"cursor,omitempty"`
-	Decisions []decision `json:"decisions"`
+	Cursor        string     `json:"cursor,omitempty"`
+	Decisions     []decision `json:"decisions"`
+	TrustedRanges *[]string  `json:"trusted_ranges,omitempty"`
 }
 
 type decision struct {
@@ -241,6 +245,13 @@ func (s *Syncer) PullPolicy() error {
 		}
 		if err := s.store.UpsertStatus(d.Fingerprint, d.Status, d.Label); err != nil {
 			return fmt.Errorf("apply decision for %s: %w", d.Fingerprint, err)
+		}
+	}
+	// A pointer distinguishes an older Gatehub that omitted the field from a
+	// current Gatehub intentionally publishing an empty trusted set.
+	if policy.TrustedRanges != nil && s.cfg.ApplyTrustedRanges != nil {
+		if err := s.cfg.ApplyTrustedRanges(*policy.TrustedRanges); err != nil {
+			return fmt.Errorf("apply trusted ranges: %w", err)
 		}
 	}
 	if policy.Cursor != "" {
