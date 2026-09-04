@@ -46,6 +46,18 @@ func TestConfigValidate(t *testing.T) {
 	if err := badURL.Validate(); err == nil {
 		t.Error("bad url accepted")
 	}
+	for _, rawURL := range []string{
+		"http://gatehub.example.com",
+		"/gatehub",
+		"https:///gatehub",
+		"ftp://gatehub.example.com",
+	} {
+		insecure := base
+		insecure.URL = rawURL
+		if err := insecure.Validate(); err == nil {
+			t.Errorf("insecure control-plane URL %q accepted", rawURL)
+		}
+	}
 	badInterval := base
 	badInterval.SyncInterval = "soon"
 	if err := badInterval.Validate(); err == nil {

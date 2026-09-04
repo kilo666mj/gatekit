@@ -55,8 +55,12 @@ func (cfg Config) Validate() error {
 	if cfg.Token == "" && (cfg.ClientCert == "" || cfg.ClientKey == "" || cfg.CA == "") {
 		return fmt.Errorf("control_plane.token or client_cert, client_key, and ca are required")
 	}
-	if _, err := url.ParseRequestURI(cfg.URL); err != nil {
+	u, err := url.ParseRequestURI(cfg.URL)
+	if err != nil {
 		return fmt.Errorf("control_plane.url: %w", err)
+	}
+	if !u.IsAbs() || !strings.EqualFold(u.Scheme, "https") || u.Host == "" {
+		return fmt.Errorf("control_plane.url must be an absolute https URL")
 	}
 	if cfg.SyncInterval != "" {
 		if _, err := time.ParseDuration(cfg.SyncInterval); err != nil {
