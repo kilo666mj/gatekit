@@ -77,7 +77,8 @@ type Observation struct {
 
 // Store is the fingerprint database.
 type Store struct {
-	path string
+	path            string
+	maxFingerprints int
 	// db is the writer handle, pinned to a single connection so writes
 	// serialize cleanly under SQLite. reader is a separate WAL read pool so
 	// hot-path lookups don't queue behind the writer.
@@ -93,6 +94,9 @@ const maxReaders = 8
 type Options struct {
 	// Path is the SQLite file. Its parent directory is created if missing.
 	Path string
+	// MaxFingerprints caps rows on first observation; <= 0 is unlimited.
+	// Approved entries are never pruned.
+	MaxFingerprints int
 	// Legacy describes typed protocol columns from a pre-gatekit schema that
 	// should be folded into the Meta bag on first open. See LegacyColumn.
 	Legacy []LegacyColumn
@@ -138,7 +142,7 @@ func Open(opts Options) (*Store, error) {
 	}
 	reader.SetMaxOpenConns(maxReaders)
 
-	s := &Store{path: opts.Path, db: db, reader: reader}
+	s := &Store{path: opts.Path, maxFingerprints: opts.MaxFingerprints, db: db, reader: reader}
 	if err := s.init(); err != nil {
 		s.Close()
 		return nil, err
@@ -146,6 +150,10 @@ func Open(opts Options) (*Store, error) {
 	if err := s.migrateLegacy(opts.Legacy); err != nil {
 		s.Close()
 		return nil, fmt.Errorf("migrate legacy columns: %w", err)
+	}
+	if err := s.boundExistingHistory(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("bound observation history: %w", err)
 	}
 	return s, nil
 }
@@ -317,6 +325,9 @@ func (s *Store) Observe(obs Observation, blockUnknown bool) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
+	if len(metaJSON) > MaxMetadataBytes {
+		return Entry{}, fmt.Errorf("metadata exceeds %d bytes", MaxMetadataBytes)
+	}
 
 	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -364,6 +375,9 @@ func (s *Store) Observe(obs Observation, blockUnknown bool) (Entry, error) {
 			return Entry{}, err
 		}
 	}
+	if err := trimHistory(ctx, tx, obs.Fingerprint); err != nil {
+		return Entry{}, err
+	}
 	ips, err := listStringsFrom(ctx, tx, `SELECT ip FROM fingerprint_ips WHERE fp = ? ORDER BY ip`, obs.Fingerprint)
 	if err != nil {
 		return Entry{}, err
@@ -375,6 +389,11 @@ func (s *Store) Observe(obs Observation, blockUnknown bool) (Entry, error) {
 	sightings, err := listSightingsFrom(ctx, tx, `SELECT ip, port, last_seen FROM fingerprint_sightings WHERE fp = ? ORDER BY last_seen DESC, ip, port`, obs.Fingerprint)
 	if err != nil {
 		return Entry{}, err
+	}
+	if entry.Count == 1 && s.maxFingerprints > 0 {
+		if _, err := pruneToLimit(ctx, tx, s.maxFingerprints); err != nil {
+			return Entry{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return Entry{}, err
@@ -519,6 +538,18 @@ func (s *Store) PruneToLimit(max int) (int, error) {
 	}
 	defer tx.Rollback()
 
+	deleted, err := pruneToLimit(ctx, tx, max)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(deleted), nil
+}
+
+func pruneToLimit(ctx context.Context, tx *sql.Tx, max int) (int64, error) {
 	var total int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM fingerprints`).Scan(&total); err != nil {
 		return 0, err
@@ -541,10 +572,7 @@ func (s *Store) PruneToLimit(max int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return int(deleted), nil
+	return deleted, nil
 }
 
 // ResolveFingerprint maps a user-supplied query to exactly one stored

@@ -59,8 +59,8 @@ func (cfg Config) Validate() error {
 	if err != nil {
 		return fmt.Errorf("control_plane.url: %w", err)
 	}
-	if !u.IsAbs() || !strings.EqualFold(u.Scheme, "https") || u.Host == "" {
-		return fmt.Errorf("control_plane.url must be an absolute https URL")
+	if !u.IsAbs() || !strings.EqualFold(u.Scheme, "https") || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+		return fmt.Errorf("control_plane.url must be an absolute https URL without userinfo or fragment")
 	}
 	if cfg.SyncInterval != "" {
 		if _, err := time.ParseDuration(cfg.SyncInterval); err != nil {
@@ -121,8 +121,11 @@ type Syncer struct {
 	cursor string
 }
 
-// New builds a Syncer. Callers should Validate the config first.
+// New validates configuration and builds a Syncer.
 func New(st *store.Store, cfg Config) (*Syncer, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	client, err := newHTTPClient(cfg)
 	if err != nil {
 		return nil, err
@@ -151,7 +154,7 @@ func Start(ctx context.Context, st *store.Store, cfg Config) error {
 
 // Run syncs immediately, then every interval until ctx is cancelled.
 func (s *Syncer) Run(ctx context.Context, interval time.Duration) {
-	s.SyncOnce()
+	s.syncOnce(ctx)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -159,32 +162,60 @@ func (s *Syncer) Run(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.SyncOnce()
+			s.syncOnce(ctx)
 		}
 	}
 }
 
 // SyncOnce performs one push/pull cycle, logging rather than returning errors
 // so a transient gatehub outage never stops the loop.
-func (s *Syncer) SyncOnce() {
-	if err := s.PushObservations(); err != nil {
+func (s *Syncer) SyncOnce() { s.syncOnce(context.Background()) }
+
+func (s *Syncer) syncOnce(ctx context.Context) {
+	if err := s.pushObservations(ctx); err != nil {
 		log.Printf("gatehub observation sync: %v", err)
 	}
-	if err := s.PullPolicy(); err != nil {
+	if err := s.pullPolicy(ctx); err != nil {
 		log.Printf("gatehub policy sync: %v", err)
 	}
 }
 
-// PushObservations uploads every stored fingerprint as an observation batch.
-func (s *Syncer) PushObservations() error {
-	entries, err := s.store.List()
+// PushObservations uploads bounded pages, never materializing the full store.
+// Sixteen entries of bounded metadata/history fit Gatehub's 2 MiB request limit.
+func (s *Syncer) PushObservations() error { return s.pushObservations(context.Background()) }
+
+func (s *Syncer) pushObservations(ctx context.Context) error {
+	through, err := s.store.LastFingerprint()
 	if err != nil {
 		return err
 	}
-	batch := observationBatch{InstanceID: s.cfg.InstanceID}
-	for fp, entry := range entries {
-		batch.Observations = append(batch.Observations, toObservation(fp, entry))
+	after := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		entries, err := s.store.ListPage(after, through, 16)
+		if err != nil {
+			return err
+		}
+		if len(entries) == 0 {
+			if after == "" {
+				return s.pushBatch(ctx, observationBatch{InstanceID: s.cfg.InstanceID})
+			}
+			return nil
+		}
+		batch := observationBatch{InstanceID: s.cfg.InstanceID}
+		for _, entry := range entries {
+			batch.Observations = append(batch.Observations, toObservation(entry.Fingerprint, entry))
+		}
+		if err := s.pushBatch(ctx, batch); err != nil {
+			return err
+		}
+		after = entries[len(entries)-1].Fingerprint
 	}
+}
+
+func (s *Syncer) pushBatch(ctx context.Context, batch observationBatch) error {
 	body, err := json.Marshal(batch)
 	if err != nil {
 		return err
@@ -193,7 +224,7 @@ func (s *Syncer) PushObservations() error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -214,12 +245,14 @@ func (s *Syncer) PushObservations() error {
 }
 
 // PullPolicy fetches verdicts since the last cursor and applies them locally.
-func (s *Syncer) PullPolicy() error {
+func (s *Syncer) PullPolicy() error { return s.pullPolicy(context.Background()) }
+
+func (s *Syncer) pullPolicy(ctx context.Context) error {
 	endpoint, err := endpointURL(s.cfg.URL, "/v1/policy", s.cfg.InstanceID, s.cursor)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
 	}
@@ -321,8 +354,11 @@ func newHTTPClient(cfg Config) (*http.Client, error) {
 		tlsConfig.RootCAs = roots
 	}
 	return &http.Client{
-		Timeout:   15 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: tlsConfig},
+		// Policy and credentials are bound to the configured endpoint. Never
+		// follow redirects, including HTTPS-to-HTTP and cross-origin redirects.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		Timeout:       15 * time.Second,
+		Transport:     &http.Transport{TLSClientConfig: tlsConfig},
 	}, nil
 }
 
