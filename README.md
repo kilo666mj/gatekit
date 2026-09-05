@@ -122,3 +122,21 @@ proven by both production gates.
 ## License
 
 MIT
+
+## Observation and transport bounds
+
+Control-plane URLs must be absolute HTTPS URLs without embedded credentials.
+Redirects are rejected; configure the final endpoint. `New` validates configuration
+as well as `Start`. Observation uploads use pages of 16 fingerprints and stop when
+the synchronization context is cancelled.
+
+The store rejects new metadata larger than 64 KiB of encoded JSON. Each fingerprint
+retains at most 128 IPs, 128 ports, and 128 recent IP/port sightings. Compatibility
+IP/port sets retain the first 128 values in sorted order. Opening an old database
+trims excess history and discards oversized metadata without changing verdicts,
+labels, or counts; freed SQLite pages remain available for reuse.
+
+`Options.MaxFingerprints` optionally enforces the row cap in the transaction that
+records a new fingerprint. Values <= 0 leave the count unlimited. Approved entries
+are never evicted. Periodic `PruneToLimit` remains useful for policy-created rows.
+`LastFingerprint` and `ListPage` expose bounded keyset pagination for synchronization.

@@ -2,8 +2,10 @@ package controlplane
 
 import (
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -91,7 +93,7 @@ func TestPushObservations(t *testing.T) {
 
 	var got observationBatch
 	var auth string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth = r.Header.Get("Authorization")
 		if r.URL.Query().Get("instance_id") != "mx" {
 			t.Errorf("instance_id = %q", r.URL.Query().Get("instance_id"))
@@ -103,7 +105,7 @@ func TestPushObservations(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s, err := New(st, Config{URL: srv.URL, InstanceID: "mx", Token: "secret"})
+	s, err := New(st, testTLSConfig(t, srv, "secret"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -137,12 +139,12 @@ func TestPushObservations(t *testing.T) {
 // the error has to say so or the operator is left staring at a status code.
 func TestPushObservationsForbiddenMessage(t *testing.T) {
 	st := openStore(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer srv.Close()
 
-	s, _ := New(st, Config{URL: srv.URL, InstanceID: "mx", Token: "t"})
+	s, _ := New(st, testTLSConfig(t, srv, "t"))
 	err := s.PushObservations()
 	if err == nil {
 		t.Fatal("want error")
@@ -159,7 +161,7 @@ func TestPullPolicyAppliesDecisions(t *testing.T) {
 	}
 
 	var sawCursor string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawCursor = r.URL.Query().Get("since")
 		json.NewEncoder(w).Encode(policyResponse{
 			Cursor: "cursor-2",
@@ -173,7 +175,7 @@ func TestPullPolicyAppliesDecisions(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s, _ := New(st, Config{URL: srv.URL, InstanceID: "mx", Token: "t"})
+	s, _ := New(st, testTLSConfig(t, srv, "t"))
 	if err := s.PullPolicy(); err != nil {
 		t.Fatalf("PullPolicy: %v", err)
 	}
@@ -214,13 +216,13 @@ func TestPullPolicyAppliesTrustedRangesWhenPresent(t *testing.T) {
 	st := openStore(t)
 	ranges := []string{"192.0.2.4/32", "2001:db8:1234::/64"}
 	var applied []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		json.NewEncoder(w).Encode(policyResponse{TrustedRanges: &ranges})
 	}))
 	defer srv.Close()
 
 	s, _ := New(st, Config{
-		URL: srv.URL, InstanceID: "web", Token: "t",
+		URL: srv.URL, InstanceID: "web", Token: "t", CA: testTLSConfig(t, srv, "t").CA,
 		ApplyTrustedRanges: func(got []string) error {
 			applied = append([]string(nil), got...)
 			return nil
@@ -237,13 +239,13 @@ func TestPullPolicyAppliesTrustedRangesWhenPresent(t *testing.T) {
 func TestPullPolicyOmittedTrustedRangesPreservesLocalState(t *testing.T) {
 	st := openStore(t)
 	called := false
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		json.NewEncoder(w).Encode(policyResponse{})
 	}))
 	defer srv.Close()
 
 	s, _ := New(st, Config{
-		URL: srv.URL, InstanceID: "web", Token: "t",
+		URL: srv.URL, InstanceID: "web", Token: "t", CA: testTLSConfig(t, srv, "t").CA,
 		ApplyTrustedRanges: func([]string) error { called = true; return nil },
 	})
 	if err := s.PullPolicy(); err != nil {
@@ -296,4 +298,13 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func testTLSConfig(t *testing.T, srv *httptest.Server, token string) Config {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return Config{URL: srv.URL, InstanceID: "mx", Token: token, CA: path}
 }
