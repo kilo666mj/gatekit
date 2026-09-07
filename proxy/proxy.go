@@ -121,7 +121,13 @@ func (s *Server) serve(ln net.Listener, route Route, handler Handler) {
 		go func() {
 			defer s.connWG.Done()
 			defer s.sem.Release()
-			defer conn.Close()
+			// Nothing to return the error to on a served connection, so log it.
+			// A peer that already went away is the normal case, not a fault.
+			defer func() {
+				if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+					s.log("[%s] CLOSE %s: %v", clientIP, route.Listen, err)
+				}
+			}()
 			handler(conn, route)
 		}()
 	}

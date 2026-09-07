@@ -17,7 +17,7 @@ func Ready() error {
 
 // Notify sends state to NOTIFY_SOCKET. It is a no-op when the variable is
 // unset. A leading '@' denotes Linux's abstract Unix socket namespace.
-func Notify(state string) error {
+func Notify(state string) (err error) {
 	socket := os.Getenv("NOTIFY_SOCKET")
 	if socket == "" {
 		return nil
@@ -29,7 +29,7 @@ func Notify(state string) error {
 	if err != nil {
 		return fmt.Errorf("dial notification socket: %w", err)
 	}
-	defer conn.Close()
+	defer closeWithError(&err, "close notification socket", conn.Close)
 	if _, err := conn.Write([]byte(state)); err != nil {
 		return fmt.Errorf("write notification: %w", err)
 	}

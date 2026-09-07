@@ -215,7 +215,7 @@ func (s *Syncer) pushObservations(ctx context.Context) error {
 	}
 }
 
-func (s *Syncer) pushBatch(ctx context.Context, batch observationBatch) error {
+func (s *Syncer) pushBatch(ctx context.Context, batch observationBatch) (err error) {
 	body, err := json.Marshal(batch)
 	if err != nil {
 		return err
@@ -234,7 +234,7 @@ func (s *Syncer) pushBatch(ctx context.Context, batch observationBatch) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeWithError(&err, "close response body", resp.Body.Close)
 	if resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("POST observations returned %s (instance %q not registered with gatehub?)", resp.Status, s.cfg.InstanceID)
 	}
@@ -247,7 +247,7 @@ func (s *Syncer) pushBatch(ctx context.Context, batch observationBatch) error {
 // PullPolicy fetches verdicts since the last cursor and applies them locally.
 func (s *Syncer) PullPolicy() error { return s.pullPolicy(context.Background()) }
 
-func (s *Syncer) pullPolicy(ctx context.Context) error {
+func (s *Syncer) pullPolicy(ctx context.Context) (err error) {
 	endpoint, err := endpointURL(s.cfg.URL, "/v1/policy", s.cfg.InstanceID, s.cursor)
 	if err != nil {
 		return err
@@ -261,7 +261,7 @@ func (s *Syncer) pullPolicy(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer closeWithError(&err, "close response body", resp.Body.Close)
 	if resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("GET policy returned %s (instance %q not registered with gatehub?)", resp.Status, s.cfg.InstanceID)
 	}
