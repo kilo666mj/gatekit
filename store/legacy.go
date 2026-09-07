@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -42,7 +43,7 @@ type LegacyColumn struct {
 // cannot overwrite metadata that gates have refreshed since.
 const metaLegacyMigrated = "gatekit_legacy_migrated"
 
-func (s *Store) migrateLegacy(cols []LegacyColumn) error {
+func (s *Store) migrateLegacy(cols []LegacyColumn) (err error) {
 	if len(cols) == 0 {
 		return nil
 	}
@@ -94,14 +95,12 @@ func (s *Store) migrateLegacy(cols []LegacyColumn) error {
 			dest = append(dest, &raw[i])
 		}
 		if err := rows.Scan(dest...); err != nil {
-			rows.Close()
-			return err
+			return errors.Join(err, closeError("close legacy rows", rows.Close))
 		}
 		meta := map[string]any{}
 		if strings.TrimSpace(metaJSON) != "" {
 			if err := json.Unmarshal([]byte(metaJSON), &meta); err != nil {
-				rows.Close()
-				return fmt.Errorf("fingerprint %s: decode existing meta: %w", fp, err)
+				return errors.Join(fmt.Errorf("fingerprint %s: decode existing meta: %w", fp, err), closeError("close legacy rows", rows.Close))
 			}
 		}
 		for i, c := range present {
@@ -114,8 +113,7 @@ func (s *Store) migrateLegacy(cols []LegacyColumn) error {
 			}
 			value, err := decodeLegacy(raw[i].String, c.Kind)
 			if err != nil {
-				rows.Close()
-				return fmt.Errorf("fingerprint %s: column %s: %w", fp, c.Column, err)
+				return errors.Join(fmt.Errorf("fingerprint %s: column %s: %w", fp, c.Column, err), closeError("close legacy rows", rows.Close))
 			}
 			if value == nil {
 				continue
@@ -124,27 +122,29 @@ func (s *Store) migrateLegacy(cols []LegacyColumn) error {
 		}
 		encoded, err := encodeMeta(meta)
 		if err != nil {
-			rows.Close()
-			return err
+			return errors.Join(err, closeError("close legacy rows", rows.Close))
 		}
 		updates = append(updates, update{fp: fp, meta: encoded})
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		return errors.Join(err, closeError("close legacy rows", rows.Close))
+	}
+	// Closed before BeginTx, not deferred: reads and writes share the single
+	// writer connection, so holding these rows open would block the write.
+	if err := closeError("close legacy rows", rows.Close); err != nil {
 		return err
 	}
-	rows.Close()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollbackTransaction(tx, &err)
 	stmt, err := tx.PrepareContext(ctx, `UPDATE fingerprints SET meta = ? WHERE fp = ?`)
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer closeWithError(&err, "close legacy update statement", stmt.Close)
 	for _, u := range updates {
 		if _, err := stmt.ExecContext(ctx, u.meta, u.fp); err != nil {
 			return err

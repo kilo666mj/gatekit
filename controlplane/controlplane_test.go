@@ -20,7 +20,11 @@ func openStore(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
 	return s
 }
 
@@ -163,7 +167,7 @@ func TestPullPolicyAppliesDecisions(t *testing.T) {
 	var sawCursor string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawCursor = r.URL.Query().Get("since")
-		json.NewEncoder(w).Encode(policyResponse{
+		if err := json.NewEncoder(w).Encode(policyResponse{
 			Cursor: "cursor-2",
 			Decisions: []decision{
 				{Fingerprint: "known", Status: store.StatusBlocked, Label: "bad"},
@@ -171,7 +175,9 @@ func TestPullPolicyAppliesDecisions(t *testing.T) {
 				{Fingerprint: "", Status: store.StatusApproved},
 				{Fingerprint: "junk", Status: store.Status("nonsense")},
 			},
-		})
+		}); err != nil {
+			t.Errorf("encode policy response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -217,7 +223,9 @@ func TestPullPolicyAppliesTrustedRangesWhenPresent(t *testing.T) {
 	ranges := []string{"192.0.2.4/32", "2001:db8:1234::/64"}
 	var applied []string
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(policyResponse{TrustedRanges: &ranges})
+		if err := json.NewEncoder(w).Encode(policyResponse{TrustedRanges: &ranges}); err != nil {
+			t.Errorf("encode policy response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -240,7 +248,9 @@ func TestPullPolicyOmittedTrustedRangesPreservesLocalState(t *testing.T) {
 	st := openStore(t)
 	called := false
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(policyResponse{})
+		if err := json.NewEncoder(w).Encode(policyResponse{}); err != nil {
+			t.Errorf("encode policy response: %v", err)
+		}
 	}))
 	defer srv.Close()
 

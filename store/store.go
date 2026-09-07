@@ -137,23 +137,19 @@ func Open(opts Options) (*Store, error) {
 
 	reader, err := sql.Open("sqlite", dsn(opts.Path, "busy_timeout=5000", "foreign_keys=ON", "journal_mode=WAL"))
 	if err != nil {
-		db.Close()
-		return nil, err
+		return nil, errors.Join(err, closeError("close writer", db.Close))
 	}
 	reader.SetMaxOpenConns(maxReaders)
 
 	s := &Store{path: opts.Path, maxFingerprints: opts.MaxFingerprints, db: db, reader: reader}
 	if err := s.init(); err != nil {
-		s.Close()
-		return nil, err
+		return nil, errors.Join(err, closeError("close store", s.Close))
 	}
 	if err := s.migrateLegacy(opts.Legacy); err != nil {
-		s.Close()
-		return nil, fmt.Errorf("migrate legacy columns: %w", err)
+		return nil, errors.Join(fmt.Errorf("migrate legacy columns: %w", err), closeError("close store", s.Close))
 	}
 	if err := s.boundExistingHistory(); err != nil {
-		s.Close()
-		return nil, fmt.Errorf("bound observation history: %w", err)
+		return nil, errors.Join(fmt.Errorf("bound observation history: %w", err), closeError("close store", s.Close))
 	}
 	return s, nil
 }
@@ -245,12 +241,12 @@ func (s *Store) addColumnIfMissing(ctx context.Context, table, column, def strin
 	return err
 }
 
-func (s *Store) hasColumn(ctx context.Context, table, column string) (bool, error) {
+func (s *Store) hasColumn(ctx context.Context, table, column string) (_ bool, err error) {
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
 		return false, err
 	}
-	defer rows.Close()
+	defer closeWithError(&err, "close table info rows", rows.Close)
 	for rows.Next() {
 		var (
 			cid         int
@@ -317,7 +313,7 @@ func encodeMeta(meta map[string]any) (string, error) {
 // metadata bag are refreshed — status, label, and first_seen are left intact,
 // which preserves a prior verdict (and any pre-approved placeholder row
 // created by UpsertStatus) while still recording the latest handshake.
-func (s *Store) Observe(obs Observation, blockUnknown bool) (Entry, error) {
+func (s *Store) Observe(obs Observation, blockUnknown bool) (_ Entry, err error) {
 	if obs.Fingerprint == "" {
 		return Entry{}, errors.New("empty fingerprint")
 	}
@@ -334,7 +330,7 @@ func (s *Store) Observe(obs Observation, blockUnknown bool) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	defer tx.Rollback()
+	defer rollbackTransaction(tx, &err)
 
 	now := encodeTime(time.Now())
 	status := StatusPending
@@ -425,13 +421,13 @@ func (s *Store) Get(fp string) (Entry, error) {
 }
 
 // List returns every entry keyed by fingerprint, with IPs and ports attached.
-func (s *Store) List() (map[string]Entry, error) {
+func (s *Store) List() (_ map[string]Entry, err error) {
 	ctx := context.Background()
 	rows, err := s.reader.QueryContext(ctx, `SELECT `+entryColumns+` FROM fingerprints`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeWithError(&err, "close fingerprint rows", rows.Close)
 
 	out := make(map[string]Entry)
 	for rows.Next() {
@@ -527,7 +523,7 @@ func (s *Store) Delete(fp string) error {
 // count is back at or below max, or until only approved entries remain.
 // Approved fingerprints are authoritative and never evicted. max <= 0 disables
 // pruning. Returns the number of entries deleted (ips/ports cascade).
-func (s *Store) PruneToLimit(max int) (int, error) {
+func (s *Store) PruneToLimit(max int) (_ int, err error) {
 	if max <= 0 {
 		return 0, nil
 	}
@@ -536,7 +532,7 @@ func (s *Store) PruneToLimit(max int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer rollbackTransaction(tx, &err)
 
 	deleted, err := pruneToLimit(ctx, tx, max)
 	if err != nil {
@@ -578,13 +574,13 @@ func pruneToLimit(ctx context.Context, tx *sql.Tx, max int) (int64, error) {
 // ResolveFingerprint maps a user-supplied query to exactly one stored
 // fingerprint, accepting either the full value or an unambiguous prefix so
 // CLIs don't force operators to paste full hashes.
-func (s *Store) ResolveFingerprint(query string) (string, error) {
+func (s *Store) ResolveFingerprint(query string) (_ string, err error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return "", errors.New("empty fingerprint")
 	}
 	var exact string
-	err := s.reader.QueryRow(`SELECT fp FROM fingerprints WHERE fp = ?`, query).Scan(&exact)
+	err = s.reader.QueryRow(`SELECT fp FROM fingerprints WHERE fp = ?`, query).Scan(&exact)
 	if err == nil {
 		return exact, nil
 	}
@@ -598,7 +594,7 @@ func (s *Store) ResolveFingerprint(query string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer rows.Close()
+	defer closeWithError(&err, "close fingerprint rows", rows.Close)
 	var matches []string
 	for rows.Next() {
 		var fp string
@@ -736,12 +732,12 @@ type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-func listStringsFrom(ctx context.Context, q querier, query, fp string) ([]string, error) {
+func listStringsFrom(ctx context.Context, q querier, query, fp string) (_ []string, err error) {
 	rows, err := q.QueryContext(ctx, query, fp)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeWithError(&err, "close string rows", rows.Close)
 	var out []string
 	for rows.Next() {
 		var v string
@@ -753,12 +749,12 @@ func listStringsFrom(ctx context.Context, q querier, query, fp string) ([]string
 	return out, rows.Err()
 }
 
-func listIntsFrom(ctx context.Context, q querier, query, fp string) ([]int, error) {
+func listIntsFrom(ctx context.Context, q querier, query, fp string) (_ []int, err error) {
 	rows, err := q.QueryContext(ctx, query, fp)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeWithError(&err, "close int rows", rows.Close)
 	var out []int
 	for rows.Next() {
 		var v int
@@ -770,12 +766,12 @@ func listIntsFrom(ctx context.Context, q querier, query, fp string) ([]int, erro
 	return out, rows.Err()
 }
 
-func allStrings(ctx context.Context, q querier, query string) (map[string][]string, error) {
+func allStrings(ctx context.Context, q querier, query string) (_ map[string][]string, err error) {
 	rows, err := q.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeWithError(&err, "close string rows", rows.Close)
 	out := make(map[string][]string)
 	for rows.Next() {
 		var fp, v string
@@ -787,12 +783,12 @@ func allStrings(ctx context.Context, q querier, query string) (map[string][]stri
 	return out, rows.Err()
 }
 
-func allInts(ctx context.Context, q querier, query string) (map[string][]int, error) {
+func allInts(ctx context.Context, q querier, query string) (_ map[string][]int, err error) {
 	rows, err := q.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeWithError(&err, "close int rows", rows.Close)
 	out := make(map[string][]int)
 	for rows.Next() {
 		var fp string
@@ -808,12 +804,12 @@ func allInts(ctx context.Context, q querier, query string) (map[string][]int, er
 	return out, rows.Err()
 }
 
-func listSightingsFrom(ctx context.Context, q querier, query string, args ...any) ([]Sighting, error) {
+func listSightingsFrom(ctx context.Context, q querier, query string, args ...any) (_ []Sighting, err error) {
 	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeWithError(&err, "close sighting rows", rows.Close)
 	var out []Sighting
 	for rows.Next() {
 		var sighting Sighting
@@ -831,12 +827,12 @@ func listSightingsFrom(ctx context.Context, q querier, query string, args ...any
 	return out, rows.Err()
 }
 
-func allSightings(ctx context.Context, q querier, query string) (map[string][]Sighting, error) {
+func allSightings(ctx context.Context, q querier, query string) (_ map[string][]Sighting, err error) {
 	rows, err := q.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeWithError(&err, "close sighting rows", rows.Close)
 	out := make(map[string][]Sighting)
 	for rows.Next() {
 		var fp, lastSeen string

@@ -63,12 +63,12 @@ func TestServerBoundsConnectionsAndDrains(t *testing.T) {
 	})
 
 	serverOne, clientOne := net.Pipe()
-	defer clientOne.Close()
+	defer func() { _ = clientOne.Close() }()
 	ln.send(serverOne)
 	<-started
 
 	serverTwo, clientTwo := net.Pipe()
-	defer clientTwo.Close()
+	defer func() { _ = clientTwo.Close() }()
 	ln.send(serverTwo)
 	_ = clientTwo.SetReadDeadline(time.Now().Add(time.Second))
 	if _, err := clientTwo.Read(make([]byte, 1)); err == nil {
@@ -101,7 +101,7 @@ func TestDrainTimesOutForActiveHandler(t *testing.T) {
 		<-release
 	})
 	serverConn, clientConn := net.Pipe()
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 	ln.send(serverConn)
 	<-started
 	_ = ln.Close()

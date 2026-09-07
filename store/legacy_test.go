@@ -126,7 +126,11 @@ func TestMigrateSSHgateDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open legacy sshgate db: %v", err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
 
 	entry, err := s.Get("fp1")
 	if err != nil {
@@ -191,7 +195,11 @@ func TestMigrateTLSgateDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open legacy tlsgate db: %v", err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
 
 	entry, err := s.Get("fp1")
 	if err != nil {
@@ -242,13 +250,19 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if _, err := s.Observe(Observation{Fingerprint: "fp1", Meta: map[string]any{"client_id": "new-client"}}, false); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close before reopen: %v", err)
+	}
 
 	s2, err := Open(Options{Path: path, Legacy: sshLegacyColumns})
 	if err != nil {
 		t.Fatalf("second open: %v", err)
 	}
-	defer s2.Close()
+	defer func() {
+		if err := s2.Close(); err != nil {
+			t.Errorf("Close second store: %v", err)
+		}
+	}()
 	entry, err := s2.Get("fp1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -268,7 +282,11 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer s.Close()
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
 	if _, err := s.Observe(Observation{Fingerprint: "fp1"}, false); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
@@ -299,7 +317,11 @@ func TestObserveNewFingerprintOnMigratedDatabase(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Open: %v", err)
 			}
-			defer s.Close()
+			defer func() {
+				if err := s.Close(); err != nil {
+					t.Errorf("Close: %v", err)
+				}
+			}()
 			entry, err := s.Observe(Observation{
 				Fingerprint: "brandnew",
 				IP:          "192.0.2.99",
@@ -330,13 +352,19 @@ func TestMigrateLeavesLegacyColumnsIntact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close before reopen: %v", err)
+	}
 
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatalf("reopen raw: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close raw db: %v", err)
+		}
+	}()
 	var kex string
 	if err := db.QueryRow(`SELECT kex FROM fingerprints WHERE fp = 'fp1'`).Scan(&kex); err != nil {
 		t.Fatalf("legacy column gone: %v", err)

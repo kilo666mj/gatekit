@@ -30,12 +30,12 @@ func trimHistory(ctx context.Context, tx *sql.Tx, fp string) error {
 // boundExistingHistory also handles databases created by older releases. Verdicts
 // and labels survive; oversized metadata is discarded rather than truncated into
 // invalid JSON. SQLite may retain freed pages for reuse.
-func (s *Store) boundExistingHistory() error {
+func (s *Store) boundExistingHistory() (err error) {
 	tx, err := s.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer rollbackTransaction(tx, &err)
 	if _, err := tx.Exec(`UPDATE fingerprints SET meta = '{}' WHERE length(CAST(meta AS BLOB)) > ?`, MaxMetadataBytes); err != nil {
 		return err
 	}
@@ -62,7 +62,7 @@ func (s *Store) LastFingerprint() (string, error) {
 // ListPage reads a bounded, sorted page and only that page's observation history.
 // It is an eventually consistent view; concurrent observations are picked up by
 // the next synchronization cycle.
-func (s *Store) ListPage(after, through string, limit int) ([]Entry, error) {
+func (s *Store) ListPage(after, through string, limit int) (_ []Entry, err error) {
 	if limit < 1 || limit > 128 {
 		return nil, fmt.Errorf("page size must be between 1 and 128")
 	}
@@ -70,7 +70,7 @@ func (s *Store) ListPage(after, through string, limit int) ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeWithError(&err, "close fingerprint rows", rows.Close)
 	var entries []Entry
 	for rows.Next() {
 		e, err := scanEntry(rows)
