@@ -16,6 +16,35 @@ that spine, factored out once.
 It is **not** a control plane — that's [`gatehub`](https://github.com/kilo666mj/gatehub).
 gatekit is what runs on the node and talks to it.
 
+## Install
+
+Gatekit v0.5.0 requires Go 1.26.5 or newer:
+
+```sh
+go get github.com/kilo666mj/gatekit@v0.5.0
+go test ./...
+```
+
+Import only the packages the application needs; the module deliberately has no
+top-level runtime or command. Browse the
+[package reference](https://pkg.go.dev/github.com/kilo666mj/gatekit) for the
+current exported API.
+
+## Security boundary
+
+Gatekit provides storage, synchronization, resource limits, and process
+lifecycle helpers. It does not parse a protocol handshake, decide whether a
+fingerprint is a trustworthy identity, authenticate backend users, or replace
+the backend's normal security controls. Applications remain responsible for
+protocol validation, policy defaults, listener exposure, secrets, and the final
+forward-or-drop decision.
+
+The `controlplane` package accepts only absolute HTTPS origins without embedded
+credentials and rejects redirects. The caller still owns the node credential,
+certificate trust roots, stable instance identity, and Gatehub registration.
+SQLite files contain observations and operator decisions; keep them on a local
+filesystem with service-account-only write access and protect their backups.
+
 ## Packages
 
 | Package | What it provides |
@@ -103,7 +132,7 @@ production schemas.
 
 ## Status
 
-**v0.3** — store, control plane, rate limiter, semaphore, proxy lifecycle,
+**v0.5** — store, control plane, rate limiter, semaphore, proxy lifecycle,
 systemd readiness notification, and tableflip lifecycle coordination are
 shared by sshgate and tlsgate.
 
@@ -119,9 +148,18 @@ meaningful protocol-specific ways, so they should not move merely to reduce a
 line count. Deployment assets can follow after the shared runtime has been
 proven by both production gates.
 
-## License
+The compatibility contract is the tagged module API. Consumers should pin a
+released version, read its release notes before upgrading, and run their own
+protocol and rollback tests. SSHGate and TLSGate are the executable integration
+references; Gatehub defines the synchronization protocol.
 
-MIT
+## Related projects
+
+- [Gate stack guide][gate-stack-guide] — how
+  Gatekit, Gatehub, GateSignal, SSHGate, and TLSGate divide responsibility
+- [Gatehub](https://github.com/kilo666mj/gatehub) — control plane and policy
+- [SSHGate](https://github.com/kilo666mj/sshgate) — SSH consumer
+- [TLSGate](https://github.com/kilo666mj/tlsgate) — TLS consumer
 
 ## Observation and transport bounds
 
@@ -140,3 +178,9 @@ labels, or counts; freed SQLite pages remain available for reuse.
 records a new fingerprint. Values <= 0 leave the count unlimited. Approved entries
 are never evicted. Periodic `PruneToLimit` remains useful for policy-created rows.
 `LastFingerprint` and `ListPage` expose bounded keyset pagination for synchronization.
+
+## License
+
+MIT
+
+[gate-stack-guide]: https://github.com/kilo666mj/michaelspost-docs/blob/main/docs/guides/gate-stack.md
