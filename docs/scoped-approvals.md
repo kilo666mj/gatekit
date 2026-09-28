@@ -1,7 +1,9 @@
 # Scoped fingerprint approvals: implementation design
 
-Status: proposed implementation contract. This document does not enable scoped
-approvals in any released gate. Existing unscoped approvals retain their behavior.
+Status: implemented library and integration contract. Gatekit provides the
+`approval` package, scoped store entries and atomic policy synchronization. A
+consumer must explicitly opt into `SupportsApprovalRanges` only after enforcing
+the scope. Existing unscoped approvals retain their behavior.
 
 ## Purpose and boundaries
 
@@ -94,7 +96,7 @@ adding a blanket block. Ordinary pending/blocked behavior stays unchanged.
 An opt-in shadow mode records `would_block_out_of_scope` while retaining the
 previous forwarding result. Logs identify shadow/enforced mode and include the
 existing fingerprint and client context, without treating shadow as enforcement.
-Keep the hot path on parsed immutable prefix lists refreshed with policy changes;
+Gatekit decodes scopes into immutable prefix lists with each returned entry;
 never reuse a verdict cached solely by fingerprint for different client IPs.
 
 ## Implementation and verification sequence
@@ -123,3 +125,20 @@ checks must verify a rejected client never opens a backend connection.
 Before live enforcement, record the running revisions, shadow evidence and a
 rollback that uses blocks or a scope-aware prior binary. Reverting to a binary
 that ignores scope would broaden an approval and is not a safe rollback.
+
+## Library API
+
+`approval.New` validates and normalizes CIDRs. `Scope.Allows` accepts a
+`netip.Addr`; a nil scope is unrestricted, while a non-nil empty scope is invalid.
+Store `Entry.ApprovalRanges` persists the scope. `Store.ApplyDecisions` replaces
+status, label and scope atomically and can persist a synchronization cursor in
+the same transaction. This API treats nil scope as an explicit removal.
+
+Legacy `SetStatus` and `UpsertStatus` reject approving an already restricted row.
+Blocking or resetting to pending clears its scope. Observation preserves scope.
+The sync client rejects an entire invalid batch instead of skipping invalid
+members, and stores cursors per control-plane URL and instance. Resetting the
+fingerprint database also clears its persisted policy cursors. Trusted-range
+callbacks remain a separate in-memory update; they are applied after decision
+validation and before the database transaction. A failed database transaction
+cannot partially change fingerprint approvals or advance their cursor.

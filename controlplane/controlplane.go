@@ -6,6 +6,7 @@ package controlplane
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kilo666mj/gatekit/approval"
 	"github.com/kilo666mj/gatekit/store"
 )
 
@@ -31,14 +33,16 @@ const (
 
 // Config is the control_plane block of a gate's config file.
 type Config struct {
-	URL          string `json:"url"`
-	InstanceID   string `json:"instance_id"`
-	Token        string `json:"token"`
-	ClientCert   string `json:"client_cert"`
-	ClientKey    string `json:"client_key"`
-	CA           string `json:"ca"`
-	ServerName   string `json:"server_name"`
-	SyncInterval string `json:"sync_interval"`
+	// SupportsApprovalRanges must only be set by gates that enforce scoped approvals.
+	SupportsApprovalRanges bool   `json:"-"`
+	URL                    string `json:"url"`
+	InstanceID             string `json:"instance_id"`
+	Token                  string `json:"token"`
+	ClientCert             string `json:"client_cert"`
+	ClientKey              string `json:"client_key"`
+	CA                     string `json:"ca"`
+	ServerName             string `json:"server_name"`
+	SyncInterval           string `json:"sync_interval"`
 	// ApplyTrustedRanges atomically replaces control-plane managed source
 	// bypasses. It is runtime wiring, not serialized configuration.
 	ApplyTrustedRanges func([]string) error `json:"-"`
@@ -83,16 +87,17 @@ func (cfg Config) Interval() time.Duration {
 }
 
 type observation struct {
-	Fingerprint string           `json:"fingerprint"`
-	Status      store.Status     `json:"status"`
-	Label       string           `json:"label,omitempty"`
-	FirstSeen   string           `json:"first_seen,omitempty"`
-	LastSeen    string           `json:"last_seen,omitempty"`
-	IPs         []string         `json:"ips,omitempty"`
-	Ports       []int            `json:"ports,omitempty"`
-	Sightings   []store.Sighting `json:"sightings,omitempty"`
-	Count       int              `json:"count,omitempty"`
-	Metadata    map[string]any   `json:"metadata,omitempty"`
+	ApprovalRanges *approval.Scope  `json:"approval_ranges,omitempty"`
+	Fingerprint    string           `json:"fingerprint"`
+	Status         store.Status     `json:"status"`
+	Label          string           `json:"label,omitempty"`
+	FirstSeen      string           `json:"first_seen,omitempty"`
+	LastSeen       string           `json:"last_seen,omitempty"`
+	IPs            []string         `json:"ips,omitempty"`
+	Ports          []int            `json:"ports,omitempty"`
+	Sightings      []store.Sighting `json:"sightings,omitempty"`
+	Count          int              `json:"count,omitempty"`
+	Metadata       map[string]any   `json:"metadata,omitempty"`
 }
 
 type observationBatch struct {
@@ -106,19 +111,15 @@ type policyResponse struct {
 	TrustedRanges *[]string  `json:"trusted_ranges,omitempty"`
 }
 
-type decision struct {
-	Fingerprint string       `json:"fingerprint"`
-	Status      store.Status `json:"status"`
-	Label       string       `json:"label,omitempty"`
-	UpdatedAt   string       `json:"updated_at,omitempty"`
-}
+type decision = store.Decision
 
 // Syncer pushes observations to gatehub and applies returned policy.
 type Syncer struct {
-	store  *store.Store
-	cfg    Config
-	client *http.Client
-	cursor string
+	store     *store.Store
+	cfg       Config
+	client    *http.Client
+	cursor    string
+	cursorKey string
 }
 
 // New validates configuration and builds a Syncer.
@@ -130,7 +131,12 @@ func New(st *store.Store, cfg Config) (*Syncer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Syncer{store: st, cfg: cfg, client: client}, nil
+	cursorKey := fmt.Sprintf("gatehub_cursor:%x", sha256.Sum256([]byte(cfg.URL+"\x00"+cfg.InstanceID)))
+	cursor, err := st.GetMeta(cursorKey)
+	if err != nil {
+		return nil, err
+	}
+	return &Syncer{store: st, cfg: cfg, client: client, cursor: cursor, cursorKey: cursorKey}, nil
 }
 
 // Start begins syncing in the background until ctx is cancelled. It is a no-op
@@ -273,23 +279,23 @@ func (s *Syncer) pullPolicy(ctx context.Context) (err error) {
 		return err
 	}
 	for _, d := range policy.Decisions {
-		if d.Fingerprint == "" {
-			continue
+		if err := d.Validate(); err != nil {
+			return fmt.Errorf("invalid policy: %w", err)
 		}
-		if !d.Status.Valid() {
-			log.Printf("gatehub policy ignored invalid status %q for %s", d.Status, d.Fingerprint)
-			continue
-		}
-		if err := s.store.UpsertStatus(d.Fingerprint, d.Status, d.Label); err != nil {
-			return fmt.Errorf("apply decision for %s: %w", d.Fingerprint, err)
+		if d.ApprovalRanges != nil && !s.cfg.SupportsApprovalRanges {
+			return fmt.Errorf("gate does not enforce approval_ranges")
 		}
 	}
+
 	// A pointer distinguishes an older Gatehub that omitted the field from a
 	// current Gatehub intentionally publishing an empty trusted set.
 	if policy.TrustedRanges != nil && s.cfg.ApplyTrustedRanges != nil {
 		if err := s.cfg.ApplyTrustedRanges(*policy.TrustedRanges); err != nil {
 			return fmt.Errorf("apply trusted ranges: %w", err)
 		}
+	}
+	if err := s.store.ApplyDecisions(policy.Decisions, s.cursorKey, policy.Cursor); err != nil {
+		return fmt.Errorf("apply policy: %w", err)
 	}
 	if policy.Cursor != "" {
 		s.cursor = policy.Cursor
@@ -298,6 +304,9 @@ func (s *Syncer) pullPolicy(ctx context.Context) (err error) {
 }
 
 func (s *Syncer) setAuth(req *http.Request) {
+	if s.cfg.SupportsApprovalRanges {
+		req.Header.Set("X-Gatekit-Capabilities", approval.Capability)
+	}
 	if s.cfg.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+s.cfg.Token)
 	}
@@ -308,16 +317,17 @@ func (s *Syncer) setAuth(req *http.Request) {
 // which is what lets one syncer serve every gate.
 func toObservation(fp string, entry store.Entry) observation {
 	return observation{
-		Fingerprint: fp,
-		Status:      entry.Status,
-		Label:       entry.Label,
-		FirstSeen:   entry.FirstSeen.UTC().Format(time.RFC3339Nano),
-		LastSeen:    entry.LastSeen.UTC().Format(time.RFC3339Nano),
-		IPs:         limited(entry.IPs, maxObservationValues),
-		Ports:       limited(entry.Ports, maxObservationValues),
-		Sightings:   limited(entry.Sightings, maxObservationValues),
-		Count:       entry.Count,
-		Metadata:    entry.Meta,
+		Fingerprint:    fp,
+		ApprovalRanges: entry.ApprovalRanges,
+		Status:         entry.Status,
+		Label:          entry.Label,
+		FirstSeen:      entry.FirstSeen.UTC().Format(time.RFC3339Nano),
+		LastSeen:       entry.LastSeen.UTC().Format(time.RFC3339Nano),
+		IPs:            limited(entry.IPs, maxObservationValues),
+		Ports:          limited(entry.Ports, maxObservationValues),
+		Sightings:      limited(entry.Sightings, maxObservationValues),
+		Count:          entry.Count,
+		Metadata:       entry.Meta,
 	}
 }
 
