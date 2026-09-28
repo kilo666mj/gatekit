@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kilo666mj/gatekit/approval"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -44,16 +46,17 @@ func (s Status) Valid() bool {
 
 // Entry is a stored fingerprint and everything observed about it.
 type Entry struct {
-	Fingerprint string         `json:"fingerprint"`
-	Status      Status         `json:"status"`
-	Label       string         `json:"label,omitempty"`
-	FirstSeen   Time           `json:"first_seen"`
-	LastSeen    Time           `json:"last_seen"`
-	Count       int            `json:"count"`
-	IPs         []string       `json:"ips,omitempty"`
-	Ports       []int          `json:"ports,omitempty"`
-	Sightings   []Sighting     `json:"sightings,omitempty"`
-	Meta        map[string]any `json:"meta,omitempty"`
+	ApprovalRanges *approval.Scope `json:"approval_ranges,omitempty"`
+	Fingerprint    string          `json:"fingerprint"`
+	Status         Status          `json:"status"`
+	Label          string          `json:"label,omitempty"`
+	FirstSeen      Time            `json:"first_seen"`
+	LastSeen       Time            `json:"last_seen"`
+	Count          int             `json:"count"`
+	IPs            []string        `json:"ips,omitempty"`
+	Ports          []int           `json:"ports,omitempty"`
+	Sightings      []Sighting      `json:"sightings,omitempty"`
+	Meta           map[string]any  `json:"meta,omitempty"`
 }
 
 // Sighting is the most recent observation of one fingerprint from one source
@@ -224,6 +227,7 @@ func (s *Store) init() error {
 	for _, column := range []struct{ name, def string }{
 		{"count", "INTEGER NOT NULL DEFAULT 0"},
 		{"meta", "TEXT NOT NULL DEFAULT '{}'"},
+		{"approval_ranges", "TEXT"},
 	} {
 		if err := s.addColumnIfMissing(ctx, "fingerprints", column.name, column.def); err != nil {
 			return err
@@ -264,7 +268,7 @@ func (s *Store) hasColumn(ctx context.Context, table, column string) (_ bool, er
 	return false, rows.Err()
 }
 
-const entryColumns = `fp, status, label, first_seen, last_seen, count, meta`
+const entryColumns = `fp, status, label, first_seen, last_seen, count, meta, approval_ranges`
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -273,9 +277,21 @@ type scanner interface {
 // scanEntry decodes entryColumns (without IPs/ports) from a row.
 func scanEntry(sc scanner) (Entry, error) {
 	var firstSeen, lastSeen, metaJSON string
+	var ranges sql.NullString
 	var e Entry
-	if err := sc.Scan(&e.Fingerprint, &e.Status, &e.Label, &firstSeen, &lastSeen, &e.Count, &metaJSON); err != nil {
+	if err := sc.Scan(&e.Fingerprint, &e.Status, &e.Label, &firstSeen, &lastSeen, &e.Count, &metaJSON, &ranges); err != nil {
 		return Entry{}, err
+	}
+	if ranges.Valid {
+		if err := json.Unmarshal([]byte(ranges.String), &e.ApprovalRanges); err != nil {
+			return Entry{}, fmt.Errorf("decode approval_ranges: %w", err)
+		}
+		if e.ApprovalRanges == nil {
+			return Entry{}, errors.New("non-null approval_ranges must contain CIDRs")
+		}
+		if e.Status != StatusApproved {
+			return Entry{}, errors.New("scope on non-approved entry")
+		}
 	}
 	parsedFirstSeen, err := decodeTime(firstSeen)
 	if err != nil {
@@ -476,7 +492,7 @@ func (s *Store) SetStatus(fp string, status Status) error {
 	if !status.Valid() {
 		return fmt.Errorf("invalid status %q", status)
 	}
-	res, err := s.db.Exec(`UPDATE fingerprints SET status = ? WHERE fp = ?`, status, fp)
+	res, err := s.db.Exec(`UPDATE fingerprints SET status = ?, approval_ranges = NULL WHERE fp = ? AND (approval_ranges IS NULL OR ? != 'approved')`, status, fp, status)
 	if err != nil {
 		return err
 	}
@@ -491,12 +507,16 @@ func (s *Store) UpsertStatus(fp string, status Status, label string) error {
 		return fmt.Errorf("invalid status %q", status)
 	}
 	now := encodeTime(time.Now())
-	_, err := s.db.Exec(`
+	res, err := s.db.Exec(`
 		INSERT INTO fingerprints (fp, status, label, first_seen, last_seen, count, meta)
 		VALUES (?, ?, ?, ?, ?, 0, '{}')
-		ON CONFLICT(fp) DO UPDATE SET status = excluded.status, label = excluded.label`,
+		ON CONFLICT(fp) DO UPDATE SET status = excluded.status, label = excluded.label, approval_ranges = NULL
+ WHERE fingerprints.approval_ranges IS NULL OR excluded.status != 'approved'`,
 		fp, status, label, now, now)
-	return err
+	if err != nil {
+		return err
+	}
+	return requireAffected(res, fp)
 }
 
 // SetLabel updates only the label of an existing fingerprint.
@@ -636,12 +656,25 @@ func (s *Store) SetMeta(key, value string) error {
 
 // ResetFingerprints deletes every fingerprint row. Used when a gate's
 // fingerprint method changes and the existing keyspace is invalidated.
-func (s *Store) ResetFingerprints() (int64, error) {
-	res, err := s.db.Exec(`DELETE FROM fingerprints`)
+func (s *Store) ResetFingerprints() (_ int64, err error) {
+	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
 	}
-	return res.RowsAffected()
+	defer rollbackTransaction(tx, &err)
+	res, err := tx.Exec(`DELETE FROM fingerprints`)
+	if err != nil {
+		return 0, err
+	}
+	count, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	// A cleared store must fetch the full policy rather than reuse its old cursor.
+	if _, err := tx.Exec(`DELETE FROM meta WHERE key GLOB 'gatehub_cursor:*'`); err != nil {
+		return 0, err
+	}
+	return count, tx.Commit()
 }
 
 // MetaFingerprintMethod is the meta key recording which fingerprint method the

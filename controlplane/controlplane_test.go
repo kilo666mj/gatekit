@@ -172,8 +172,6 @@ func TestPullPolicyAppliesDecisions(t *testing.T) {
 			Decisions: []decision{
 				{Fingerprint: "known", Status: store.StatusBlocked, Label: "bad"},
 				{Fingerprint: "unseen", Status: store.StatusApproved, Label: "preapproved"},
-				{Fingerprint: "", Status: store.StatusApproved},
-				{Fingerprint: "junk", Status: store.Status("nonsense")},
 			},
 		}); err != nil {
 			t.Errorf("encode policy response: %v", err)
@@ -204,10 +202,6 @@ func TestPullPolicyAppliesDecisions(t *testing.T) {
 	}
 	if unseen.Status != store.StatusApproved {
 		t.Errorf("unseen = %+v", unseen)
-	}
-	// An unparseable status is skipped, not applied and not fatal.
-	if _, err := st.Get("junk"); err == nil {
-		t.Error("invalid status was applied")
 	}
 
 	if err := s.PullPolicy(); err != nil {

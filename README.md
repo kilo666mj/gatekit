@@ -99,6 +99,12 @@ re-approves a fingerprint without repeating its label silently blanks it,
 losing the annotation that makes the row identifiable. `UpsertStatus` does take
 both, because the control plane is authoritative for both.
 
+## Scoped approvals
+
+See [scoped approval integration](docs/scoped-approvals.md) before enabling
+client-CIDR restrictions. Gatekit validates and persists restrictions; each gate
+remains responsible for enforcing them before advertising protocol support.
+
 ## Migrating an existing gate database
 
 sshgate and tlsgate both have databases in service, with protocol fields in
