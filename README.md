@@ -21,13 +21,13 @@ gatekit is what runs on the node and talks to it.
 Gatekit v0.5.0 requires Go 1.26.5 or newer:
 
 ```sh
-go get github.com/kilo666mj/gatekit@v0.5.0
+go get go.michaelspost.com/gatekit@v0.7.0
 go test ./...
 ```
 
 Import only the packages the application needs; the module deliberately has no
 top-level runtime or command. Browse the
-[package reference](https://pkg.go.dev/github.com/kilo666mj/gatekit) for the
+[package reference](https://pkg.go.dev/go.michaelspost.com/gatekit) for the
 current exported API.
 
 ## Security boundary
@@ -190,3 +190,15 @@ are never evicted. Periodic `PruneToLimit` remains useful for policy-created row
 MIT
 
 [gate-stack-guide]: https://github.com/kilo666mj/michaelspost-docs/blob/main/docs/guides/gate-stack.md
+
+## Module path migration
+
+Starting with `v0.7.0`, the canonical module path is
+`go.michaelspost.com/gatekit`. Update imports (including package subpaths)
+and the requirement in `go.mod` together, then run `go mod tidy` and your tests.
+Do not mix the old and new package paths in one build: Go treats them as
+different package identities. No `replace` directive is needed.
+
+Earlier tags retain `github.com/kilo666mj/gatekit` and remain available for
+existing consumers pinned to those releases. GitHub remains the source repository;
+the vanity path allows future hosting changes without changing imports again.

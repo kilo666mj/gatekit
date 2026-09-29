@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/kilo666mj/gatekit/approval"
+	"go.michaelspost.com/gatekit/approval"
 	"time"
 )
 
