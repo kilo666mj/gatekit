@@ -1,7 +1,7 @@
 package controlplane
 
 import (
-	"github.com/kilo666mj/gatekit/store"
+	"go.michaelspost.com/gatekit/store"
 	"io"
 	"net/http"
 	"net/http/httptest"

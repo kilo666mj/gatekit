@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kilo666mj/gatekit/semaphore"
+	"go.michaelspost.com/gatekit/semaphore"
 )
 
 // Route maps one listening address to one backend address. Port is derived

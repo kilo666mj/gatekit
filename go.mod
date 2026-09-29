@@ -1,4 +1,4 @@
-module github.com/kilo666mj/gatekit
+module go.michaelspost.com/gatekit
 
 go 1.26.5
 

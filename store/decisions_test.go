@@ -2,7 +2,7 @@ package store
 
 import (
 	"database/sql"
-	"github.com/kilo666mj/gatekit/approval"
+	"go.michaelspost.com/gatekit/approval"
 	"net/netip"
 	"path/filepath"
 	"testing"
