@@ -174,6 +174,14 @@ Redirects are rejected; configure the final endpoint. `New` validates configurat
 as well as `Start`. Observation uploads use pages of 16 fingerprints and stop when
 the synchronization context is cancelled.
 
+After the initial snapshot, uploads include only new or changed observations.
+Only successfully accepted batches advance the in-memory acknowledgement cache;
+failed uploads are retried. Quiet nodes send an empty heartbeat each sync interval,
+and policy polling continues at its configured frequency. A full snapshot runs
+every 15 minutes and after each client restart, allowing Gatehub to recover data
+after a restore without persisting client synchronization state. The cache retains
+one hash per current fingerprint, not copies of its metadata or history.
+
 The store rejects new metadata larger than 64 KiB of encoded JSON. Each fingerprint
 retains at most 128 IPs, 128 ports, and 128 recent IP/port sightings. Compatibility
 IP/port sets retain the first 128 values in sorted order. Opening an old database

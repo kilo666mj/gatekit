@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"go.michaelspost.com/gatekit/approval"
@@ -25,6 +26,9 @@ import (
 const (
 	// DefaultSyncInterval is how often a gate syncs when unconfigured.
 	DefaultSyncInterval = 30 * time.Second
+	// FullSyncInterval bounds recovery after the server restores older data.
+	// A new Syncer also sends a full snapshot before using incremental uploads.
+	FullSyncInterval = 15 * time.Minute
 	// maxObservationValues caps the per-fingerprint IP and port lists in a
 	// pushed observation, so one heavily-scanned fingerprint cannot inflate
 	// the batch without bound.
@@ -115,11 +119,14 @@ type decision = store.Decision
 
 // Syncer pushes observations to gatehub and applies returned policy.
 type Syncer struct {
-	store     *store.Store
-	cfg       Config
-	client    *http.Client
-	cursor    string
-	cursorKey string
+	store        *store.Store
+	cfg          Config
+	client       *http.Client
+	cursor       string
+	cursorKey    string
+	pushMu       sync.Mutex
+	acknowledged map[string][sha256.Size]byte
+	lastFullSync time.Time
 }
 
 // New validates configuration and builds a Syncer.
@@ -186,11 +193,21 @@ func (s *Syncer) syncOnce(ctx context.Context) {
 	}
 }
 
-// PushObservations uploads bounded pages, never materializing the full store.
+// PushObservations uploads changed observations in bounded pages. Unchanged
+// stores still send a heartbeat. Full snapshots run at startup and periodically.
 // Sixteen entries of bounded metadata/history fit Gatehub's 2 MiB request limit.
 func (s *Syncer) PushObservations() error { return s.pushObservations(context.Background()) }
 
 func (s *Syncer) pushObservations(ctx context.Context) error {
+	s.pushMu.Lock()
+	defer s.pushMu.Unlock()
+	started := time.Now()
+	full := s.lastFullSync.IsZero() || started.Sub(s.lastFullSync) >= FullSyncInterval
+	if s.acknowledged == nil {
+		s.acknowledged = make(map[string][sha256.Size]byte)
+	}
+	seen := make(map[string]bool)
+	sent := false
 	through, err := s.store.LastFingerprint()
 	if err != nil {
 		return err
@@ -205,20 +222,51 @@ func (s *Syncer) pushObservations(ctx context.Context) error {
 			return err
 		}
 		if len(entries) == 0 {
-			if after == "" {
-				return s.pushBatch(ctx, observationBatch{InstanceID: s.cfg.InstanceID})
-			}
-			return nil
+			break
 		}
 		batch := observationBatch{InstanceID: s.cfg.InstanceID}
+		hashes := make(map[string][sha256.Size]byte)
 		for _, entry := range entries {
-			batch.Observations = append(batch.Observations, toObservation(entry.Fingerprint, entry))
+			obs := toObservation(entry.Fingerprint, entry)
+			encoded, err := json.Marshal(obs)
+			if err != nil {
+				return err
+			}
+			hash := sha256.Sum256(encoded)
+			seen[entry.Fingerprint] = true
+			previous, ok := s.acknowledged[entry.Fingerprint]
+			if full || !ok || previous != hash {
+				batch.Observations = append(batch.Observations, obs)
+				hashes[entry.Fingerprint] = hash
+			}
 		}
-		if err := s.pushBatch(ctx, batch); err != nil {
-			return err
+		if len(batch.Observations) != 0 {
+			if err := s.pushBatch(ctx, batch); err != nil {
+				return err
+			}
+			// Only accepted batches may suppress a later upload. Failed requests
+			// are retried, even if the server committed before the response failed.
+			for fp, hash := range hashes {
+				s.acknowledged[fp] = hash
+			}
+			sent = true
 		}
 		after = entries[len(entries)-1].Fingerprint
 	}
+	if !sent {
+		if err := s.pushBatch(ctx, observationBatch{InstanceID: s.cfg.InstanceID}); err != nil {
+			return err
+		}
+	}
+	for fp := range s.acknowledged {
+		if !seen[fp] {
+			delete(s.acknowledged, fp)
+		}
+	}
+	if full {
+		s.lastFullSync = started
+	}
+	return nil
 }
 
 func (s *Syncer) pushBatch(ctx context.Context, batch observationBatch) (err error) {
